@@ -25,24 +25,7 @@ const sharedScreen = document.getElementById('sharedScreen');
 
 // SOCKET.IO variables
 const socket = io();
-
-// Get room ID from URL path
-function getRoomIdFromUrl() {
-    const path = window.location.pathname;
-    if (path.startsWith('/room/')) {
-        const roomId = path.split('/room/')[1];
-        const roomNumber = parseInt(roomId);
-        
-        // Validate room number (1-23 for ITABAZA)
-        if (!isNaN(roomNumber) && roomNumber >= 1 && roomNumber <= 23) {
-            return `itabaza-room-${roomNumber}`;
-        }
-    }
-    // Default fallback room for home page access
-    return 'itabaza-general-room';
-}
-
-const roomId = getRoomIdFromUrl();
+const roomId = 'video-meeting-room';
 let peerConnections = {};
 let iceCandidatesQueue = {}; // Queue for ICE candidates received before remote description
 
