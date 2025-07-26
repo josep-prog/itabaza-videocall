@@ -32,6 +32,42 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
+// Handle room routes
+app.get('/room/:roomId', (req, res) => {
+    const roomId = req.params.roomId;
+    
+    // Validate room ID (should be 1-23 for ITABAZA)
+    const roomNumber = parseInt(roomId);
+    if (isNaN(roomNumber) || roomNumber < 1 || roomNumber > 23) {
+        return res.status(404).send(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Room Not Found - ITABAZA Video Call</title>
+                <style>
+                    body { font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #f5f5f5; }
+                    .error-container { text-align: center; background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.1); }
+                    .error-code { font-size: 72px; font-weight: bold; color: #dc3545; margin-bottom: 16px; }
+                    .error-title { font-size: 24px; color: #333; margin-bottom: 12px; }
+                    .error-description { color: #666; margin-bottom: 24px; }
+                    .btn { background: #007bff; color: white; padding: 12px 24px; border: none; border-radius: 6px; text-decoration: none; display: inline-block; }
+                </style>
+            </head>
+            <body>
+                <div class="error-container">
+                    <div class="error-code">404</div>
+                    <h1 class="error-title">Room Not Found</h1>
+                    <p class="error-description">Room ${roomId} is not available. ITABAZA video rooms are numbered 1-23.</p>
+                    <a href="/" class="btn">Return to Home</a>
+                </div>
+            </body>
+            </html>
+        `);
+    }
+    
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
+
 // Store room participants
 const rooms = new Map();
 
