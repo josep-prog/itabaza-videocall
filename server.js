@@ -9,14 +9,30 @@ const server = http.createServer(app);
 const io = socketIO(server, {
     cors: {
         origin: "*",
-        methods: ["GET", "POST"]
-    }
+        methods: ["GET", "POST"],
+        credentials: true
+    },
+    transports: ['websocket', 'polling'],
+    allowEIO3: true,
+    pingTimeout: 60000,
+    pingInterval: 25000
 });
 
 const PORT = process.env.PORT || 3001;
 
 // Serve static files
 app.use(express.static(__dirname));
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        rooms: rooms.size,
+        connections: io.engine.clientsCount
+    });
+});
 
 // API endpoint to get client-safe config
 app.get('/api/config', (req, res) => {
@@ -38,6 +54,15 @@ const rooms = new Map();
 // Socket.IO connection handling
 io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
+    
+    // Handle connection errors
+    socket.on('connect_error', (error) => {
+        console.error('Socket connection error:', error);
+    });
+    
+    socket.on('error', (error) => {
+        console.error('Socket error:', error);
+    });
     
     // Join room
     socket.on('join-room', (roomId, userId, userName) => {

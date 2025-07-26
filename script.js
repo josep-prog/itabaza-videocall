@@ -24,7 +24,14 @@ const sharedContent = document.getElementById('sharedContent');
 const sharedScreen = document.getElementById('sharedScreen');
 
 // SOCKET.IO variables
-const socket = io();
+const socket = io({
+    transports: ['websocket', 'polling'],
+    upgrade: true,
+    rememberUpgrade: true,
+    timeout: 20000,
+    forceNew: true
+});
+
 const roomId = 'video-meeting-room';
 let peerConnections = {};
 let iceCandidatesQueue = {}; // Queue for ICE candidates received before remote description
@@ -65,6 +72,31 @@ async function startPreview() {
 
 // Initialize Socket.IO connection
 function initializeSocketConnection() {
+    // Handle socket connection events
+    socket.on('connect', () => {
+        console.log('✅ Connected to signaling server');
+    });
+    
+    socket.on('disconnect', (reason) => {
+        console.log('❌ Disconnected from signaling server:', reason);
+        if (reason === 'io server disconnect') {
+            // Server disconnected us, try to reconnect
+            socket.connect();
+        }
+    });
+    
+    socket.on('connect_error', (error) => {
+        console.error('❌ Socket connection error:', error);
+    });
+    
+    socket.on('reconnect', (attemptNumber) => {
+        console.log(`✅ Reconnected to signaling server after ${attemptNumber} attempts`);
+    });
+    
+    socket.on('reconnect_error', (error) => {
+        console.error('❌ Socket reconnection error:', error);
+    });
+    
     socket.on('user-connected', (userId, userName) => {
         console.log(`User ${userName} connected`);
         addParticipant(userId, userName, false);
@@ -179,10 +211,41 @@ function createPeerConnection(userId, isInitiator = false) {
     
     const pc = new RTCPeerConnection({
         iceServers: [
+            // Primary STUN servers
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' }
-        ]
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
+            
+            // Additional STUN servers for better reliability
+            { urls: 'stun:stun.voiparound.com:3478' },
+            { urls: 'stun:stun.voipbuster.com:3478' },
+            { urls: 'stun:stun.voipstunt.com:3478' },
+            { urls: 'stun:stun.voxgratia.org:3478' },
+            { urls: 'stun:stun.xten.com:3478' },
+            
+            // Free TURN servers (for fallback when STUN fails)
+            {
+                urls: 'turn:openrelay.metered.ca:80',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            }
+        ],
+        iceCandidatePoolSize: 10,
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require',
+        iceTransportPolicy: 'all'
     });
     
     // Add local stream to peer connection
@@ -337,15 +400,42 @@ function createPeerConnection(userId, isInitiator = false) {
         console.log(`Connection state with ${userId}: ${pc.connectionState}`);
         if (pc.connectionState === 'connected') {
             console.log(`✅ Successfully connected to ${userId}`);
+            showConnectionStatus(userId, 'connected');
         } else if (pc.connectionState === 'failed') {
             console.log(`❌ Connection failed with ${userId}`);
-            // Don't automatically restart, let user handle it
+            showConnectionStatus(userId, 'failed');
+            // Try to restart connection after a delay
+            setTimeout(() => {
+                if (peerConnections[userId] && peerConnections[userId].connectionState === 'failed') {
+                    console.log(`🔄 Attempting to restart connection with ${userId}`);
+                    restartConnection(userId);
+                }
+            }, 5000);
+        } else if (pc.connectionState === 'disconnected') {
+            console.log(`⚠️ Connection disconnected with ${userId}`);
+            showConnectionStatus(userId, 'disconnected');
         }
     };
     
     // Handle ICE connection state
     pc.oniceconnectionstatechange = () => {
         console.log(`ICE connection state with ${userId}: ${pc.iceConnectionState}`);
+        if (pc.iceConnectionState === 'failed') {
+            console.log(`❌ ICE connection failed with ${userId}`);
+            showConnectionStatus(userId, 'ice-failed');
+        } else if (pc.iceConnectionState === 'connected') {
+            console.log(`✅ ICE connection established with ${userId}`);
+        }
+    };
+    
+    // Handle ICE gathering state
+    pc.onicegatheringstatechange = () => {
+        console.log(`ICE gathering state with ${userId}: ${pc.iceGatheringState}`);
+    };
+    
+    // Handle signaling state
+    pc.onsignalingstatechange = () => {
+        console.log(`Signaling state with ${userId}: ${pc.signalingState}`);
     };
     
     peerConnections[userId] = pc;
@@ -463,6 +553,9 @@ async function joinMeeting() {
         // Update participant count
         updateParticipantCount();
         
+        // Start connection quality monitoring
+        startConnectionQualityMonitoring();
+        
         console.log('Successfully joined meeting');
         
     } catch (error) {
@@ -487,6 +580,23 @@ function addParticipant(participantId, participantName, isLocal = false) {
     // Additional properties for better video handling
     video.setAttribute('playsinline', 'true');
     video.setAttribute('webkit-playsinline', 'true');
+    
+    // Add connection quality indicator for remote participants
+    if (!isLocal) {
+        const qualityIndicator = document.createElement('div');
+        qualityIndicator.className = 'connection-quality';
+        qualityIndicator.style.cssText = `
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #666;
+            z-index: 3;
+        `;
+        participantElement.appendChild(qualityIndicator);
+    }
     
     const nameLabel = document.createElement('div');
     nameLabel.className = 'participant-name';
@@ -1088,32 +1198,101 @@ function showConnectionStatus(userId, status) {
             existingStatus.remove();
         }
         
-        if (status === 'connected') {
-            // Add a brief success indicator
+        let statusText = '';
+        let backgroundColor = '';
+        let icon = '';
+        
+        switch (status) {
+            case 'connected':
+                statusText = 'Connected';
+                backgroundColor = 'rgba(34, 139, 34, 0.9)';
+                icon = '✅';
+                break;
+            case 'failed':
+                statusText = 'Connection Failed';
+                backgroundColor = 'rgba(220, 53, 69, 0.9)';
+                icon = '❌';
+                break;
+            case 'disconnected':
+                statusText = 'Disconnected';
+                backgroundColor = 'rgba(255, 193, 7, 0.9)';
+                icon = '⚠️';
+                break;
+            case 'ice-failed':
+                statusText = 'ICE Failed';
+                backgroundColor = 'rgba(220, 53, 69, 0.9)';
+                icon = '🌐';
+                break;
+            case 'connecting':
+                statusText = 'Connecting...';
+                backgroundColor = 'rgba(0, 123, 255, 0.9)';
+                icon = '⏳';
+                break;
+        }
+        
+        if (statusText) {
             const statusIndicator = document.createElement('div');
-            statusIndicator.className = 'connection-status connected';
-            statusIndicator.innerHTML = '✅';
+            statusIndicator.className = `connection-status ${status}`;
+            statusIndicator.innerHTML = `${icon} ${statusText}`;
             statusIndicator.style.cssText = `
                 position: absolute;
                 top: 8px;
                 left: 8px;
-                background: rgba(34, 139, 34, 0.9);
+                background: ${backgroundColor};
                 color: white;
                 padding: 4px 8px;
                 border-radius: 4px;
-                font-size: 12px;
+                font-size: 11px;
                 z-index: 3;
-                animation: fadeInOut 3s ease forwards;
+                font-weight: 500;
+                white-space: nowrap;
             `;
             participantElement.appendChild(statusIndicator);
             
-            // Auto-remove after 3 seconds
-            setTimeout(() => {
-                if (statusIndicator.parentNode) {
-                    statusIndicator.remove();
-                }
-            }, 3000);
+            // Auto-remove success status after 3 seconds
+            if (status === 'connected') {
+                setTimeout(() => {
+                    if (statusIndicator.parentNode) {
+                        statusIndicator.remove();
+                    }
+                }, 3000);
+            }
         }
+    }
+}
+
+// Restart connection with a participant
+async function restartConnection(userId) {
+    try {
+        console.log(`🔄 Restarting connection with ${userId}`);
+        
+        // Close existing connection
+        if (peerConnections[userId]) {
+            peerConnections[userId].close();
+            delete peerConnections[userId];
+        }
+        
+        // Clear any queued ICE candidates
+        delete iceCandidatesQueue[userId];
+        
+        // Show connecting status
+        showConnectionStatus(userId, 'connecting');
+        
+        // Create new connection
+        const pc = createPeerConnection(userId, true);
+        
+        // Wait a bit and create new offer
+        setTimeout(async () => {
+            try {
+                await createOffer(userId);
+                console.log(`✅ Restart offer sent to ${userId}`);
+            } catch (error) {
+                console.error(`❌ Failed to create restart offer for ${userId}:`, error);
+            }
+        }, 1000);
+        
+    } catch (error) {
+        console.error(`❌ Failed to restart connection with ${userId}:`, error);
     }
 }
 
@@ -1197,6 +1376,68 @@ function addLoadingIndicator(userId) {
         `;
         participantElement.appendChild(loadingIndicator);
     }
+}
+
+// Update connection quality indicator
+function updateConnectionQuality(userId, quality) {
+    const participantElement = document.querySelector(`#participant-${userId}`);
+    if (participantElement) {
+        const qualityIndicator = participantElement.querySelector('.connection-quality');
+        if (qualityIndicator) {
+            let color = '#666';
+            switch (quality) {
+                case 'excellent':
+                    color = '#28a745';
+                    break;
+                case 'good':
+                    color = '#ffc107';
+                    break;
+                case 'poor':
+                    color = '#dc3545';
+                    break;
+            }
+            qualityIndicator.style.background = color;
+        }
+    }
+}
+
+// Monitor connection quality
+function startConnectionQualityMonitoring() {
+    setInterval(() => {
+        Object.keys(peerConnections).forEach(userId => {
+            const pc = peerConnections[userId];
+            if (pc && pc.connectionState === 'connected') {
+                // Get connection stats
+                pc.getStats().then(stats => {
+                    let totalBitrate = 0;
+                    let totalPacketsLost = 0;
+                    
+                    stats.forEach(report => {
+                        if (report.type === 'inbound-rtp' && report.mediaType === 'video') {
+                            if (report.bytesReceived) {
+                                totalBitrate += report.bytesReceived * 8 / 1000; // kbps
+                            }
+                            if (report.packetsLost) {
+                                totalPacketsLost += report.packetsLost;
+                            }
+                        }
+                    });
+                    
+                    // Determine quality based on bitrate and packet loss
+                    let quality = 'poor';
+                    if (totalBitrate > 500 && totalPacketsLost < 10) {
+                        quality = 'excellent';
+                    } else if (totalBitrate > 200 && totalPacketsLost < 50) {
+                        quality = 'good';
+                    }
+                    
+                    updateConnectionQuality(userId, quality);
+                }).catch(error => {
+                    console.warn('Failed to get connection stats:', error);
+                });
+            }
+        });
+    }, 5000); // Check every 5 seconds
 }
 
 // Initialize the app when page loads
